@@ -15,6 +15,11 @@ version = "0.0.1"
 # required for "hatch-requirements-txt" to work
 dynamic = ["dependencies", "optional-dependencies"]
 
+[dependency-groups]
+dev = [
+    "ipykernel",
+]
+
 [tool.hatch.build]
 ignore-vcs = true
 include = ["**/*.py"]

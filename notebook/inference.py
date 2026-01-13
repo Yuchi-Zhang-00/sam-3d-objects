@@ -25,13 +25,16 @@ from copy import deepcopy
 from kaolin.visualize import IpyTurntableVisualizer
 from kaolin.render.camera import Camera, CameraExtrinsics, PinholeIntrinsics
 import builtins
-from pytorch3d.transforms import quaternion_multiply, quaternion_invert
+from pytorch3d.transforms import quaternion_multiply, quaternion_invert, quaternion_to_matrix
+from pytorch3d.structures import Meshes, Pointclouds
+from pytorch3d.renderer import TexturesVertex
 
 import sam3d_objects  # REMARK(Pierre) : do not remove this import
 from sam3d_objects.pipeline.inference_pipeline_pointmap import InferencePipelinePointMap
 from sam3d_objects.model.backbone.tdfy_dit.utils import render_utils
 
 from sam3d_objects.utils.visualization import SceneVisualizer
+from sam3d_objects.data.dataset.tdfy.transforms_3d import compose_transform
 
 __all__ = ["Inference"]
 
@@ -251,7 +254,39 @@ def normalized_gaussian(scene_gs, in_place=False, outlier_percentile=None):
     scene_gs.from_scaling(norm_scale)
     return scene_gs
 
-
+def transform_mesh(*outputs, in_place=False):
+    if not in_place:
+        outputs = [deepcopy(output) for output in outputs]
+    for output in outputs:
+        mesh = output['glb']
+        verts = mesh.vertices
+        #  trimesh coordinates to pytorch3d coordinates
+        transform = np.array([
+            [-1, 0, 0],
+            [0, 0, -1],
+            [0, -1, 0],
+        ])
+        print(f"verts shape: {verts.shape}")
+        verts = verts @ transform    
+        # verts = transform @ verts        
+        verts = torch.tensor(verts, dtype=torch.float32).to('cuda:0')
+        print("verts type:", type(verts))
+        if torch.is_tensor(verts):
+            print(f"verts dtype: {verts.dtype}, device: {verts.device}, shape: {verts.shape}")
+        quat_l2c=output["rotation"]
+        trans_l2c=output["translation"]
+        scale_l2c=output["scale"]
+        R_l2c = quaternion_to_matrix(quat_l2c)
+        l2c_transform = compose_transform(
+            scale=scale_l2c, rotation=R_l2c, translation=trans_l2c
+        )
+        mesh.vertices = l2c_transform.transform_points(verts).cpu().numpy()
+        # faces = torch.tensor(mesh.faces, dtype=torch.int64)
+        # verts_rgb = torch.ones_like(verts)[None]   # 白色纹理
+        # textures = TexturesVertex(verts_features=verts_rgb)
+        # return Meshes(verts=[verts], faces=[faces], textures=textures)
+        return mesh
+        
 def make_scene(*outputs, in_place=False):
     if not in_place:
         outputs = [deepcopy(output) for output in outputs]
@@ -311,6 +346,119 @@ def make_scene(*outputs, in_place=False):
 
     return scene_gs
 
+# def make_scene(*outputs, in_place=False):
+#     if not in_place:
+#         outputs = [deepcopy(output) for output in outputs]
+
+#     all_outs = []
+#     minimum_kernel_size = float("inf")
+#     for output in outputs:
+#         # 处理主要gaussians
+#         PC = SceneVisualizer.object_pointcloud(
+#             points_local=output["gaussian"][0].get_xyz.unsqueeze(0),
+#             quat_l2c=output["rotation"],
+#             trans_l2c=output["translation"],
+#             scale_l2c=output["scale"],
+#         )
+#         output["gaussian"][0].from_xyz(PC.points_list()[0])
+#         # must ... ROTATE
+#         output["gaussian"][0].from_rotation(
+#             quaternion_multiply(
+#                 quaternion_invert(output["rotation"]),
+#                 output["gaussian"][0].get_rotation,
+#             )
+#         )
+#         scale = output["gaussian"][0].get_scaling
+#         adjusted_scale = scale * output["scale"]
+#         assert (
+#             output["scale"][0, 0].item()
+#             == output["scale"][0, 1].item()
+#             == output["scale"][0, 2].item()
+#         )
+#         output["gaussian"][0].mininum_kernel_size *= output["scale"][0, 0].item()
+#         adjusted_scale = torch.maximum(
+#             adjusted_scale,
+#             torch.tensor(
+#                 output["gaussian"][0].mininum_kernel_size * 1.1,
+#                 device=adjusted_scale.device,
+#             ),
+#         )
+#         output["gaussian"][0].from_scaling(adjusted_scale)
+#         minimum_kernel_size = min(
+#             minimum_kernel_size,
+#             output["gaussian"][0].mininum_kernel_size,
+#         )
+        
+#         # 对其他3个gaussians应用相同的变换
+#         for gaussian_key in ["gaussians_y_reverse", "gaussians_z_reverse", "gaussians_yz_reverse"]:
+#             if gaussian_key in output and output[gaussian_key] is not None:
+#                 # 对其他gaussians应用相同的位姿变换
+#                 other_PC = SceneVisualizer.object_pointcloud(
+#                     points_local=output[gaussian_key][0].get_xyz.unsqueeze(0),
+#                     quat_l2c=output["rotation"],
+#                     trans_l2c=output["translation"],
+#                     scale_l2c=output["scale"],
+#                 )
+#                 output[gaussian_key][0].from_xyz(other_PC.points_list()[0])
+#                 # 同样应用旋转
+#                 output[gaussian_key][0].from_rotation(
+#                     quaternion_multiply(
+#                         quaternion_invert(output["rotation"]),
+#                         output[gaussian_key][0].get_rotation,
+#                     )
+#                 )
+#                 # 应用相同的缩放
+#                 other_scale = output[gaussian_key][0].get_scaling
+#                 other_adjusted_scale = other_scale * output["scale"]
+#                 other_adjusted_scale = torch.maximum(
+#                     other_adjusted_scale,
+#                     torch.tensor(
+#                         output[gaussian_key][0].mininum_kernel_size * 1.1,
+#                         device=other_adjusted_scale.device,
+#                     ),
+#                 )
+#                 output[gaussian_key].from_scaling(other_adjusted_scale)
+        
+#         all_outs.append(output)
+
+#     # 创建所有gaussians类型的合并结果
+#     result_gaussians = {}
+    
+#     # 合并主要gaussian
+#     scene_gs = all_outs[0]["gaussian"][0]
+#     for out in all_outs[1:]:
+#         if "gaussian" in out and out["gaussian"][0] is not None:
+#             out_gs = out["gaussian"][0]
+#             scene_gs._xyz = torch.cat([scene_gs._xyz, out_gs._xyz], dim=0)
+#             scene_gs._features_dc = torch.cat(
+#                 [scene_gs._features_dc, out_gs._features_dc], dim=0
+#             )
+#             scene_gs._scaling = torch.cat([scene_gs._scaling, out_gs._scaling], dim=0)
+#             scene_gs._rotation = torch.cat([scene_gs._rotation, out_gs._rotation], dim=0)
+#             scene_gs._opacity = torch.cat([scene_gs._opacity, out_gs._opacity], dim=0)
+    
+#     result_gaussians["gaussian"] = scene_gs
+#     result_gaussians["gaussians_y_reverse"] = None
+#     result_gaussians["gaussians_z_reverse"] = None
+#     result_gaussians["gaussians_yz_reverse"] = None
+    
+#     # 合并其他3个gaussian类型
+#     for g_type in ["gaussians_y_reverse", "gaussians_z_reverse", "gaussians_yz_reverse"]:
+#         if g_type in all_outs[0] and all_outs[0][g_type] is not None:
+#             other_scene_gs = all_outs[0][g_type]
+#             for out in all_outs[1:]:
+#                 if g_type in out and out[g_type] is not None:
+#                     other_out_gs = out[g_type]
+#                     other_scene_gs._xyz = torch.cat([other_scene_gs._xyz, other_out_gs._xyz], dim=0)
+#                     other_scene_gs._features_dc = torch.cat(
+#                         [other_scene_gs._features_dc, other_out_gs._features_dc], dim=0
+#                     )
+#                     other_scene_gs._scaling = torch.cat([other_scene_gs._scaling, other_out_gs._scaling], dim=0)
+#                     other_scene_gs._rotation = torch.cat([other_scene_gs._rotation, other_out_gs._rotation], dim=0)
+#                     other_scene_gs._opacity = torch.cat([other_scene_gs._opacity, other_out_gs._opacity], dim=0)
+#             result_gaussians[g_type] = other_scene_gs
+    
+#     return result_gaussians
 
 def check_target(
     target: str,

@@ -415,12 +415,107 @@ class InferencePipelinePointMap(InferencePipeline):
             # glb.export("sample.glb")
             logger.info("Finished!")
 
-            return {
+            # return {
+            #     **ss_return_dict,
+            #     **outputs,
+            #     "pointmap": pts.cpu().permute((1, 2, 0)),  # HxWx3
+            #     "pointmap_colors": pts_colors.cpu().permute((1, 2, 0)),  # HxWx3
+            # }
+            
+            result = {
                 **ss_return_dict,
                 **outputs,
                 "pointmap": pts.cpu().permute((1, 2, 0)),  # HxWx3
                 "pointmap_colors": pts_colors.cpu().permute((1, 2, 0)),  # HxWx3
             }
+            
+            # 如果需要转换到传统计算机视觉坐标系
+            # if output_cv_coords:
+            # result = self._convert_to_cv_coords(result)
+            
+            return result
+        
+    def _convert_to_cv_coords(self, result_dict):
+        """
+        将结果从 PyTorch3D 坐标系转换到传统计算机视觉坐标系
+        """
+        
+        # 保留原始的PyTorch3D坐标系结果
+        # result_dict['gaussians_y_reverse'] = result_dict.get('gaussians', None)
+        # result_dict['gaussians_z_reverse'] = result_dict.get('gaussians', None)
+        # result_dict['gaussians_yz_reverse'] = result_dict.get('gaussians', None)
+        # result_dict['rotation_origin'] = result_dict.get('rotation', None)
+        # result_dict['translation_origin'] = result_dict.get('translation', None)
+        
+        # 如果有3D高斯点的坐标，转换到CV坐标系
+        if 'gaussians' in result_dict:
+            gaussian_model = result_dict['gaussians']
+            if hasattr(gaussian_model, '_xyz'):
+                # 对于3D高斯点坐标: [x, y, z] -> [x, -y, -z]
+                # 注意：我们需要修改内部的 _xyz 值，而不是一个叫做 means 的字段
+                xyz = gaussian_model._xyz
+                xyz_cv = xyz.clone()
+                # xyz_cv[:, 1] = -xyz[:, 1]  # Y轴翻转
+                # result_dict['gaussians'].from_xyz(xyz_cv)
+                xyz_cv[:, 2] = -xyz[:, 2]  # Z轴翻转（根据需要取消注释）
+                # result_dict['gaussians'].from_xyz(xyz_cv)
+                # xyz_cv[:, 0] = -xyz[:, 0]  # X轴翻转
+                result_dict['gaussians'].from_xyz(xyz_cv)
+
+        
+        # 如果有旋转参数 (四元数) 需要相应变换
+        if 'rotation' in result_dict:
+            # 对于四元数 [w, x, y, z]，Y和Z轴翻转对应的变换
+            # 旋转矩阵的变换会导致四元数的变化
+            rotation = result_dict['rotation']
+            if rotation.dim() == 2:  # 批处理
+                # 这里需要根据具体的旋转表示方式进行转换
+                # 通常需要先转换为旋转矩阵，应用坐标变换，再转回四元数
+                result_dict['rotation'] = self._transform_quaternion_cv_coords(rotation)
+        
+        # 如果有平移参数
+        if 'translation' in result_dict:
+            translation = result_dict['translation']
+            translation_cv = translation.clone()
+            translation_cv[..., 1] = -translation[..., 1]  # Y轴翻转
+            translation_cv[..., 2] = -translation[..., 2]  # Z轴翻转
+            result_dict['translation'] = translation_cv
+        
+        # # 如果有mesh数据
+        # if 'glb' in result_dict and result_dict['glb'] is not None:
+        #     # 假设mesh包含顶点坐标
+        #     result_dict['glb'] = self._transform_mesh_to_cv_coords(result_dict['glb'])
+        
+        return result_dict
+
+    def _transform_quaternion_cv_coords(self, quat):
+        """
+        将四元数从PyTorch3D坐标系转换到传统CV坐标系
+        """
+        # 从PyTorch3D (Y-up, Z-back) 到 CV (Y-down, Z-forward)
+        # 对于旋转 [x, y, z] -> [x, -y, -z] 的坐标变换
+        # 四元数的变换为: [w, x, y, z] -> [w, x, -y, -z]
+        quat_cv = quat.clone()
+        quat_cv[..., 2] = -quat[..., 2]  # y分量
+        quat_cv[..., 3] = -quat[..., 3]  # z分量
+        return quat_cv
+
+    def _transform_mesh_to_cv_coords(self, mesh):
+        """
+        将mesh从PyTorch3D坐标系转换到传统CV坐标系
+        这个函数的具体实现取决于mesh的格式
+        """
+        # 这里需要根据实际的mesh格式进行转换
+        # 如果mesh是Open3D格式或其他格式，需要相应处理
+        # 对顶点坐标进行 [x, y, z] -> [x, -y, -z] 变换
+        # 注意：如果使用Open3D，可能需要旋转mesh
+        if hasattr(mesh, 'vertices'):
+            vertices = np.asarray(mesh.vertices)
+            vertices_cv = vertices.copy()
+            vertices_cv[:, 1] = -vertices[:, 1]  # Y轴翻转
+            vertices_cv[:, 2] = -vertices[:, 2]  # Z轴翻转
+            mesh.vertices = o3d.utility.Vector3dVector(vertices_cv)
+        return mesh
 
     @staticmethod
     def _down_sample_img(img_3chw: torch.Tensor):
