@@ -189,6 +189,47 @@ def render_video(
         **kwargs,
     )
 
+# 用来渲染正面视图  跟输入rgb一致的相机视角
+def render_gs_view(
+    sample,
+    extrinsics,   # OpenCV: world -> camera, shape (4,4) or (B,4,4)
+    fov_y,        # radians
+    resolution=448,
+    bg_color=(0, 0, 0),
+    **kwargs,
+):
+    """
+    Render Gaussian Splatting with the SAME camera convention as mesh_rendering
+    """
+
+    device = sample._xyz.device if hasattr(sample, "_xyz") else "cuda"
+
+    # --------- extrinsics ---------
+    extrinsics = torch.tensor(extrinsics, dtype=torch.float32, device=device)
+    if extrinsics.ndim == 2:
+        extrinsics = extrinsics[None]  # (1,4,4)
+
+    # --------- intrinsics ---------
+    fov_y = torch.tensor(float(fov_y), device=device)
+    intrinsics = utils3d.torch.intrinsics_from_fov_xy(fov_y, fov_y)
+    intrinsics = intrinsics.expand(extrinsics.shape[0], -1, -1)
+
+    # --------- render ---------
+    images = render_utils.render_frames(
+        sample,
+        extrinsics,
+        intrinsics,
+        {
+            "resolution": resolution,
+            "bg_color": bg_color,
+            "backend": "gsplat",
+        },
+        **kwargs,
+    )["color"]
+
+    return images[0]
+
+
 
 def ready_gaussian_for_video_rendering(scene_gs, in_place=False, fix_alignment=False):
     if fix_alignment:

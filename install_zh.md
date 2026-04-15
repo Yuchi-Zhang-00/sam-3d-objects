@@ -21,6 +21,10 @@ nvidia-pyindex==1.0.9 改为 # nvidia-pyindex==1.0.9    （即注释掉）
 torchaudio==2.5.1+cu121 改为 torchaudio, 
 xformers==0.0.28.post3 改为 xformers （即取消指定torchaudio和xformers的版本）
 ```
+requirements.p3d.txt：
+```
+tflash_attn==2.8.3 改为 flash_attn==2.7.3
+```
 
 # 运行以下安装命令 
 
